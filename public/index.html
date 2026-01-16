@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Silsong PvP Boss Prototype</title>
+<style>
+  body { margin:0; overflow:hidden; background:#111; }
+  canvas { display:block; margin:auto; background:#222; }
+  #hud { position:absolute; top:0; left:0; width:100%; color:white; font-family:sans-serif; }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas" width="1000" height="600"></canvas>
+<div id="hud"></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="game.js"></script>
+<script>
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+
+  const game = new Game();
+
+  // Equip weapons
+  game.players[0].equipWeapon(new Katana());
+  game.players[1].equipWeapon(new LongSword());
+
+  // Spawn boss
+  game.spawnBoss();
+
+  // Input handling
+  const keys = {};
+  window.addEventListener('keydown', e => keys[e.code] = true);
+  window.addEventListener('keyup', e => keys[e.code] = false);
+
+  function getInput(playerId) {
+    // Player 1: WASD + F/G for attacks
+    if (playerId === 1) {
+      return {
+        left: keys['KeyA'],
+        right: keys['KeyD'],
+        jump: keys['KeyW'],
+        light: keys['KeyF'],
+        heavy: keys['KeyG'],
+        charge: keys['KeyH'],
+        grab: keys['KeyJ']
+      };
+    }
+    // Player 2: Arrow keys + Numpad 1/2/3
+    if (playerId === 2) {
+      return {
+        left: keys['ArrowLeft'],
+        right: keys['ArrowRight'],
+        jump: keys['ArrowUp'],
+        light: keys['Numpad1'],
+        heavy: keys['Numpad2'],
+        charge: keys['Numpad3'],
+        grab: keys['Numpad0']
+      };
+    }
+    return {};
+  }
+
+  // Main loop
+  function loop() {
+    // Record inputs
+    game.players.forEach(p => {
+      game.inputs.record(p.id, getInput(p.id));
+    });
+
+    // Update engine
+    game.update();
+
+    // Clear canvas
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    // Draw players
+    game.players.forEach(p => {
+      ctx.fillStyle = 'blue';
+      ctx.fillRect(p.pos.x, p.pos.y, p.w, p.h);
+    });
+
+    // Draw boss
+    if (game.boss) {
+      ctx.fillStyle = 'darkred';
+      ctx.fillRect(game.boss.pos.x, game.boss.pos.y, game.boss.w, game.boss.h);
+    }
+
+    // Draw hitboxes (optional debug)
+    game.hitboxes.forEach(hb => {
+      ctx.strokeStyle = 'yellow';
+      ctx.strokeRect(hb.x, hb.y, hb.w, hb.h);
+    });
+
+    // Draw HUD
+    HUD.draw(ctx, game.players);
+    game.updateDamageNumbers(ctx);
+
+    requestAnimationFrame(loop);
+  }
+
+  requestAnimationFrame(loop);
+
+  // Socket.IO hooks (optional for online)
+  const socket = io();
+  game.players.forEach(p => {
+    // Emit inputs to server
+    setInterval(()=>{
+      socket.emit('input', {
+        frame: game.frame,
+        playerId: p.id,
+        input: getInput(p.id)
+      });
+    }, 1000/60);
+
+    // Receive authoritative state
+    socket.on('state', state => {
+      // placeholder: update local positions, hp, etc.
+      // e.g., game.players[0].pos.x = state.players[0].x
+    });
+  });
+</script>
+</body>
+</html>
