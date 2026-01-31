@@ -1,7 +1,7 @@
 {
-  "name": "silsong-pvp-boss",
+  "name": "arena-fighter",
   "version": "1.0.0",
-  "description": "2D Online PvP + Raid Boss Game",
+  "description": "Online 2D Competitive Arena Fighter",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

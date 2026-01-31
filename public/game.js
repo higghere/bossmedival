@@ -1,1221 +1,762 @@
-// ================================
-// SILSONG-STYLE ONLINE PvP ENGINE
-// CHUNK 1 — CORE ENGINE FOUNDATION
-// ================================
+let socket;
+let canvas;
+let ctx;
+let selectedWeapon = 'longsword';
+let playerName = 'Player';
+let myPlayerId;
+let players = new Map();
+let keys = {};
+let isTrainingMode = false;
+let animationFrame = 0;
+let spriteSheets = {};
+let effectSprites = {};
+let imagesLoaded = false;
 
-'use strict';
+// Game constants
+const CANVAS_WIDTH = 1200;
+const CANVAS_HEIGHT = 600;
+const PLAYER_WIDTH = 40;
+const PLAYER_HEIGHT = 60;
+const GROUND_Y = 540;
 
-/* ===============================
-   CONFIG
-================================ */
-const CONFIG = {
-  WIDTH: 1000,
-  HEIGHT: 600,
-  FPS: 60,
-  FIXED_DT: 1000 / 60,
-
-  GRAVITY: 0.9,
-  TERMINAL_VEL: 18,
-  GROUND_Y: 520,
-
-  INVULN_FRAMES: 18,
+// Weapon colors for visual differentiation
+const WEAPON_COLORS = {
+  longsword: '#8B4513',
+  scythe: '#4B0082', 
+  katana: '#C0C0C0',
+  fist: '#FF4500'
 };
 
-/* ===============================
-   VECTOR MATH
-================================ */
-class Vec2 {
-  constructor(x = 0, y = 0) {
-    this.x = x;
-    this.y = y;
-  }
+// Platform definitions
+const PLATFORMS = [
+  { x: 200, y: 450, width: 150, height: 20 },
+  { x: 1000, y: 450, width: 150, height: 20 },
+  { x: 400, y: 350, width: 120, height: 20 },
+  { x: 800, y: 350, width: 120, height: 20 },
+  { x: 600, y: 250, width: 100, height: 20 },
+  { x: 300, y: 200, width: 80, height: 20 },
+  { x: 900, y: 200, width: 80, height: 20 }
+];
 
-  add(v) {
-    this.x += v.x;
-    this.y += v.y;
-  }
-
-  clone() {
-    return new Vec2(this.x, this.y);
-  }
-}
-
-/* ===============================
-   INPUT BUFFER (ROLLBACK-SAFE)
-================================ */
-class InputBuffer {
+class EffectSystem {
   constructor() {
-    this.buffer = {};
-    this.frame = 0;
+    this.particleEffects = [];
+    this.lastEffectTimes = new Map();
   }
-
-  record(playerId, input) {
-    if (!this.buffer[this.frame]) this.buffer[this.frame] = {};
-    this.buffer[this.frame][playerId] = JSON.parse(JSON.stringify(input));
+  
+  update(deltaTime) {
+    this.particleEffects = this.particleEffects.filter(effect => {
+      effect.x += effect.vx * deltaTime;
+      effect.y += effect.vy * deltaTime;
+      effect.life -= deltaTime * 1000;
+      
+      return effect.life > 0;
+    });
   }
-
-  get(frame, playerId) {
-    return this.buffer[frame]?.[playerId] || {};
-  }
-
-  nextFrame() {
-    this.frame++;
-  }
-}
-
-/* ===============================
-   ENTITY BASE CLASS
-================================ */
-class Entity {
-  constructor(x, y, w, h) {
-    this.pos = new Vec2(x, y);
-    this.vel = new Vec2(0, 0);
-    this.w = w;
-    this.h = h;
-
-    this.onGround = false;
-  }
-
-  applyGravity() {
-    if (!this.onGround) {
-      this.vel.y += CONFIG.GRAVITY;
-      if (this.vel.y > CONFIG.TERMINAL_VEL) {
-        this.vel.y = CONFIG.TERMINAL_VEL;
+  
+  createAttackEffect(playerId, player) {
+    // Defensive: ensure player exists and has valid state
+    if (!player || !player.state) return;
+    
+    const now = Date.now();
+    const lastTime = this.lastEffectTimes.get(playerId) || 0;
+    
+    if ((player.state === 'lightAttack' || player.state === 'heavyAttack') && 
+        now - lastTime > 100) {
+      
+      this.lastEffectTimes.set(playerId, now);
+      
+      // Use actual effect sprites if available
+      if (effectSprites && effectSprites.slash) {
+        const effect = {
+          x: player.x + (player.state === 'heavyAttack' ? 40 : 30) * (player.facing || 1),
+          y: player.y + (player.state === 'heavyAttack' ? -10 : -20),
+          vx: 0,
+          vy: 0,
+          life: 200,
+          type: 'slash',
+          heavy: player.state === 'heavyAttack',
+          facing: player.facing || 1
+        };
+        this.particleEffects.push(effect);
+      } else {
+        // Fallback to colored rectangles
+        const effect = {
+          x: player.x + (player.state === 'heavyAttack' ? 40 : 30) * (player.facing || 1),
+          y: player.y + (player.state === 'heavyAttack' ? -10 : -20),
+          vx: (player.facing || 1) * 100,
+          vy: 0,
+          life: 200,
+          color: player.state === 'heavyAttack' ? '#FF6600' : '#FFFF00',
+          size: player.state === 'heavyAttack' ? 30 : 20
+        };
+        this.particleEffects.push(effect);
+      }
+    }
+    
+    // Create parry effect
+    if (player.state === 'parry' && now - lastTime > 200) {
+      if (effectSprites && effectSprites.parry) {
+        const effect = {
+          x: player.x,
+          y: player.y,
+          vx: 0,
+          vy: 0,
+          life: 300,
+          type: 'parry'
+        };
+        this.particleEffects.push(effect);
       }
     }
   }
+  
+  cleanupPlayerEffects(playerId) {
+    this.lastEffectTimes.delete(playerId);
+  }
+  
+  render(ctx) {
+    this.particleEffects.forEach(effect => {
+      if (effect.type && effectSprites[effect.type]) {
+        // Render sprite effects
+        const img = new Image();
+        img.src = effectSprites[effect.type];
+        
+        if (img.complete) {
+          ctx.save();
+          ctx.globalAlpha = Math.max(0, effect.life / 300);
+          
+          if (effect.type === 'slash') {
+            // Rotate slash effect
+            ctx.translate(effect.x, effect.y);
+            ctx.rotate((animationFrame * 10) * Math.PI / 180);
+            if (effect.facing < 0) {
+              ctx.scale(-1, 1);
+            }
+            ctx.drawImage(img, -16, -16, 32, 32);
+          } else if (effect.type === 'parry') {
+            // Pulsing parry shield
+            const scale = 1 + Math.sin(animationFrame * 0.2) * 0.1;
+            ctx.translate(effect.x, effect.y);
+            ctx.scale(scale, scale);
+            ctx.drawImage(img, -32, -32, 64, 64);
+          }
+          
+          ctx.restore();
+        }
+      } else {
+        // Fallback to colored rectangles
+        ctx.fillStyle = effect.color;
+        ctx.globalAlpha = Math.max(0, effect.life / 200);
+        ctx.fillRect(effect.x - effect.size/2, effect.y - effect.size/2, effect.size, effect.size);
+      }
+    });
+    ctx.globalAlpha = 1.0;
+  }
+}
 
-  physics() {
-    this.applyGravity();
-    this.pos.add(this.vel);
-
-    if (this.pos.y + this.h >= CONFIG.GROUND_Y) {
-      this.pos.y = CONFIG.GROUND_Y - this.h;
-      this.vel.y = 0;
-      this.onGround = true;
+class Renderer {
+  constructor(ctx) {
+    this.ctx = ctx;
+    this.effectSystem = new EffectSystem();
+  }
+  
+  clear() {
+    // Clear canvas with gradient background
+    const gradient = this.ctx.createLinearGradient(0, 0, 0, CANVAS_HEIGHT);
+    gradient.addColorStop(0, '#1a1a2e');
+    gradient.addColorStop(0.5, '#16213e');
+    gradient.addColorStop(1, '#0f3460');
+    this.ctx.fillStyle = gradient;
+    this.ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+  }
+  
+  renderArena() {
+    // Draw ground
+    this.ctx.fillStyle = '#654321';
+    this.ctx.fillRect(0, GROUND_Y, CANVAS_WIDTH, CANVAS_HEIGHT - GROUND_Y);
+    
+    // Draw walls
+    this.ctx.fillStyle = '#8B4513';
+    this.ctx.fillRect(0, 0, 30, CANVAS_HEIGHT);
+    this.ctx.fillRect(CANVAS_WIDTH - 30, 0, 30, CANVAS_HEIGHT);
+    
+    // Draw wall jump zones
+    this.ctx.fillStyle = 'rgba(74, 74, 74, 0.3)';
+    this.ctx.fillRect(10, 100, 30, 400);
+    this.ctx.fillRect(CANVAS_WIDTH - 40, 100, 30, 400);
+    
+    // Draw platforms
+    this.ctx.fillStyle = '#8B4513';
+    PLATFORMS.forEach(platform => {
+      this.ctx.fillRect(
+        platform.x - platform.width/2,
+        platform.y - platform.height/2,
+        platform.width,
+        platform.height
+      );
+    });
+  }
+  
+  renderPlayer(player) {
+    if (!player || !imagesLoaded) return;
+    
+    // Defensive: validate all required properties
+    if (typeof player.x !== 'number' || typeof player.y !== 'number') return;
+    if (typeof player.facing !== 'number') player.facing = 1;
+    if (typeof player.health !== 'number') player.health = 100;
+    if (typeof player.weapon !== 'string') player.weapon = 'longsword';
+    if (typeof player.state !== 'string') player.state = 'idle';
+    
+    this.ctx.save();
+    
+    // Use actual sprite sheets if available, otherwise fallback to colored rectangle
+    const spriteSheet = spriteSheets[player.weapon];
+    if (spriteSheet) {
+      const img = new Image();
+      img.src = spriteSheet;
+      
+      // Determine which animation frame to use
+      let frameX = 0;
+      let frameY = 0;
+      let frameWidth = 32;
+      let frameHeight = 48;
+      
+      switch(player.state) {
+        case 'idle':
+          frameY = 0;
+          frameX = (Math.floor(animationFrame / 8) % 4);
+          break;
+        case 'run':
+          frameY = 48;
+          frameX = (Math.floor(animationFrame / 4) % 4);
+          break;
+        case 'jump':
+        case 'airDash':
+          frameY = 96;
+          frameX = 0;
+          break;
+        case 'lightAttack':
+        case 'heavyAttack':
+          frameY = 144;
+          frameX = (Math.floor(animationFrame / 2) % 4);
+          break;
+        case 'parry':
+          frameY = 96;
+          frameX = 1;
+          break;
+        case 'hitstun':
+          frameY = 96;
+          frameX = 2;
+          break;
+        default:
+          frameY = 0;
+          frameX = 0;
+      }
+      
+      // Draw sprite
+      if (img.complete) {
+        this.ctx.drawImage(
+          img,
+          frameX * frameWidth, frameY, frameWidth, frameHeight,
+          player.x - PLAYER_WIDTH/2, player.y - PLAYER_HEIGHT/2, 
+          PLAYER_WIDTH, PLAYER_HEIGHT
+        );
+      }
+      
+      // Flip sprite if facing left
+      if (player.facing < 0) {
+        this.ctx.scale(-1, 1);
+        this.ctx.drawImage(
+          img,
+          frameX * frameWidth, frameY, frameWidth, frameHeight,
+          -player.x - PLAYER_WIDTH/2, player.y - PLAYER_HEIGHT/2, 
+          PLAYER_WIDTH, PLAYER_HEIGHT
+        );
+        this.ctx.scale(-1, 1);
+      }
+      
+      // Apply death effect
+      if (player.health <= 0) {
+        this.ctx.globalAlpha = 0.6;
+      }
     } else {
-      this.onGround = false;
+      // Fallback to colored rectangle
+      const weaponColor = WEAPON_COLORS[player.weapon] || '#FFFFFF';
+      this.ctx.fillStyle = player.health <= 0 ? '#444444' : weaponColor;
+      this.ctx.globalAlpha = player.health <= 0 ? 0.6 : 1.0;
+      
+      this.ctx.fillRect(
+        player.x - PLAYER_WIDTH/2,
+        player.y - PLAYER_HEIGHT/2,
+        PLAYER_WIDTH,
+        PLAYER_HEIGHT
+      );
+      
+      // Draw facing indicator
+      this.ctx.fillStyle = '#FFFFFF';
+      this.ctx.fillRect(
+        player.x + (player.facing > 0 ? PLAYER_WIDTH/2 - 5 : -PLAYER_WIDTH/2 + 1),
+        player.y - 5,
+        4,
+        4
+      );
     }
+    
+    // Draw state indicators
+    this.drawStateIndicators(player);
+    
+    this.ctx.restore();
+  }
+  
+  drawStateIndicators(player) {
+    this.ctx.strokeStyle = '#FFFFFF';
+    this.ctx.lineWidth = 2;
+    
+    switch(player.state) {
+      case 'parry':
+        // Draw parry shield
+        this.ctx.strokeStyle = '#00FFFF';
+        this.ctx.globalAlpha = 0.8;
+        this.ctx.beginPath();
+        this.ctx.arc(player.x, player.y, 35, 0, Math.PI * 2);
+        this.ctx.stroke();
+        break;
+        
+      case 'hitstun':
+        // Draw hitstun stars
+        this.ctx.fillStyle = '#FFFF00';
+        for (let i = 0; i < 3; i++) {
+          const angle = (Date.now() / 100 + i * 120) * Math.PI / 180;
+          const x = player.x + Math.cos(angle) * 30;
+          const y = player.y - 30 + Math.sin(angle) * 10;
+          this.drawStar(x, y, 3, 8, 4);
+        }
+        break;
+        
+      case 'execution':
+        // Draw execution effect
+        this.ctx.strokeStyle = '#FF00FF';
+        this.ctx.globalAlpha = 0.9;
+        this.ctx.lineWidth = 4;
+        this.ctx.beginPath();
+        this.ctx.arc(player.x, player.y, 40, 0, Math.PI * 2);
+        this.ctx.stroke();
+        break;
+    }
+    
+    this.ctx.globalAlpha = 1.0;
+  }
+  
+  drawStar(cx, cy, spikes, outerRadius, innerRadius) {
+    let rot = Math.PI / 2 * 3;
+    let x = cx;
+    let y = cy;
+    const step = Math.PI / spikes;
+    
+    this.ctx.beginPath();
+    this.ctx.moveTo(cx, cy - outerRadius);
+    
+    for (let i = 0; i < spikes; i++) {
+      x = cx + Math.cos(rot) * outerRadius;
+      y = cy + Math.sin(rot) * outerRadius;
+      this.ctx.lineTo(x, y);
+      rot += step;
+      
+      x = cx + Math.cos(rot) * innerRadius;
+      y = cy + Math.sin(rot) * innerRadius;
+      this.ctx.lineTo(x, y);
+      rot += step;
+    }
+    
+    this.ctx.lineTo(cx, cy - outerRadius);
+    this.ctx.closePath();
+    this.ctx.fill();
+  }
+  
+  update(deltaTime) {
+    this.effectSystem.update(deltaTime);
+  }
+  
+  renderEffects() {
+    this.effectSystem.render(this.ctx);
+  }
+  
+  cleanupPlayer(playerId) {
+    this.effectSystem.cleanupPlayerEffects(playerId);
   }
 }
 
-/* ===============================
-   HITBOX SYSTEM
-================================ */
-class Hitbox {
-  constructor(
-    owner,
-    x, y,
-    w, h,
-    damage = 0,
-    kbX = 0,
-    kbY = 0,
-    stun = 0
-  ) {
-    this.owner = owner;
-    this.pos = new Vec2(x, y);
-    this.w = w;
-    this.h = h;
-
-    this.damage = damage;
-    this.kbX = kbX;
-    this.kbY = kbY;
-    this.stun = stun;
-
-    this.active = true;
-    this.onHit = null;
+class EntitySystem {
+  constructor() {
+    this.players = new Map();
+    this.lastUpdateTime = 0;
   }
-
-  intersects(entity) {
-    return !(
-      this.pos.x + this.w < entity.pos.x ||
-      this.pos.x > entity.pos.x + entity.w ||
-      this.pos.y + this.h < entity.pos.y ||
-      this.pos.y > entity.pos.y + entity.h
-    );
+  
+  updatePlayers(serverPlayers) {
+    const currentTime = Date.now();
+    const newPlayerIds = new Set();
+    
+    // Update existing players and add new ones
+    serverPlayers.forEach(playerData => {
+      newPlayerIds.add(playerData.id);
+      
+      // Defensive: validate player data
+      if (!this.isValidPlayerData(playerData)) {
+        console.warn('Invalid player data received:', playerData);
+        return;
+      }
+      
+      this.players.set(playerData.id, playerData);
+    });
+    
+    // Remove disconnected players
+    for (const [playerId, player] of this.players) {
+      if (!newPlayerIds.has(playerId)) {
+        this.removePlayer(playerId);
+      }
+    }
+    
+    this.lastUpdateTime = currentTime;
+  }
+  
+  isValidPlayerData(playerData) {
+    return playerData &&
+           typeof playerData.id === 'string' &&
+           typeof playerData.name === 'string' &&
+           typeof playerData.x === 'number' &&
+           typeof playerData.y === 'number' &&
+           typeof playerData.health === 'number' &&
+           typeof playerData.maxHealth === 'number' &&
+           typeof playerData.facing === 'number' &&
+           typeof playerData.state === 'string';
+  }
+  
+  getPlayer(playerId) {
+    return this.players.get(playerId);
+  }
+  
+  getAllPlayers() {
+    return Array.from(this.players.values());
+  }
+  
+  removePlayer(playerId) {
+    this.players.delete(playerId);
+    // Cleanup any systems that reference this player
+    if (window.game && window.game.renderer) {
+      window.game.renderer.cleanupPlayer(playerId);
+    }
+  }
+  
+  cleanup() {
+    this.players.clear();
   }
 }
 
-/* ===============================
-   PLAYER
-================================ */
-class Player extends Entity {
-  constructor(id, x) {
-    super(x, CONFIG.GROUND_Y - 60, 40, 60);
-
-    this.id = id;
-    this.hp = 100;
-    this.facing = 1;
-
-    this.invuln = 0;
-    this.hitstun = 0;
-
-    this.weapon = null;
-    this.comboCounter = 0;
-  }
-
-  equipWeapon(weapon) {
-    this.weapon = weapon;
-    weapon.owner = this;
-  }
-
-  update(input) {
-    if (this.invuln > 0) this.invuln--;
-    if (this.hitstun > 0) {
-      this.hitstun--;
-      return;
-    }
-
-    // Horizontal movement
-    if (input.left) {
-      this.vel.x = -4;
-      this.facing = -1;
-    } else if (input.right) {
-      this.vel.x = 4;
-      this.facing = 1;
-    } else {
-      this.vel.x *= 0.8;
-    }
-
-    // Jump
-    if (input.jump && this.onGround) {
-      this.vel.y = -14;
-      this.onGround = false;
-    }
-
-    // Weapon input delegated later (Chunk 2)
-    if (this.weapon) {
-      this.weapon.handleInput(input);
-      this.weapon.update();
-    }
-  }
-
-  takeHit(hitbox) {
-    if (this.invuln > 0) return;
-
-    this.hp -= hitbox.damage;
-    this.vel.x = hitbox.kbX;
-    this.vel.y = hitbox.kbY;
-    this.hitstun = hitbox.stun;
-    this.invuln = CONFIG.INVULN_FRAMES;
-  }
-}
-
-/* ===============================
-   GAME CORE
-================================ */
 class Game {
   constructor() {
-    this.players = [];
-    this.hitboxes = [];
-    this.inputs = new InputBuffer();
-    this.frame = 0;
-
-    // boss, damage numbers, HUD etc come later
-    this.boss = null;
+    this.canvas = document.getElementById('gameCanvas');
+    this.ctx = this.canvas.getContext('2d');
+    this.renderer = new Renderer(this.ctx);
+    this.entitySystem = new EntitySystem();
+    this.lastUpdateTime = Date.now();
+    
+    this.loadAssets();
   }
-
-  addPlayer(player) {
-    this.players.push(player);
+  
+  loadAssets() {
+    // Load sprite sheets
+    const script = document.createElement('script');
+    script.src = '/assets/sprites.js';
+    script.onload = () => {
+      // Create sprite sheets once loaded
+      spriteSheets = createWeaponSpecificSpriteSheets();
+      effectSprites = createEffectSprites();
+      imagesLoaded = true;
+      
+      this.setupInput();
+      this.startGameLoop();
+    };
+    document.head.appendChild(script);
   }
-
-  update() {
-    // Player update
-    for (const p of this.players) {
-      const input = this.inputs.get(this.frame, p.id);
-      p.update(input);
-      p.physics();
+  
+  setupInput() {
+    window.addEventListener('keydown', (e) => {
+      keys[e.key.toLowerCase()] = true;
+      e.preventDefault();
+    });
+    
+    window.addEventListener('keyup', (e) => {
+      keys[e.key.toLowerCase()] = false;
+      e.preventDefault();
+    });
+  }
+  
+  startGameLoop() {
+    const gameLoop = () => {
+      const now = Date.now();
+      const deltaTime = (now - this.lastUpdateTime) / 1000;
+      this.lastUpdateTime = now;
+      
+      this.handleInput();
+      this.render(deltaTime);
+      
+      requestAnimationFrame(gameLoop);
+    };
+    
+    gameLoop();
+  }
+  
+  handleInput() {
+    const movement = {};
+    const actions = {};
+    
+    // Movement inputs
+    if (keys['a'] || keys['arrowleft']) movement.left = true;
+    if (keys['d'] || keys['arrowright']) movement.right = true;
+    if (keys['w'] || keys['arrowup']) movement.jump = true;
+    if (keys['s'] || keys['arrowdown']) movement.fastFall = true;
+    
+    // Wall jump detection
+    if ((keys['w'] || keys['arrowup']) && !this.wallJumpPressed) {
+      movement.wallJump = true;
+      this.wallJumpPressed = true;
+    } else if (!keys['w'] && !keys['arrowup']) {
+      this.wallJumpPressed = false;
     }
-
-    // Hit detection
-    for (const hb of this.hitboxes) {
-      if (!hb.active) continue;
-
-      for (const p of this.players) {
-        if (p !== hb.owner && hb.intersects(p)) {
-          p.takeHit(hb);
-          if (hb.onHit) hb.onHit(p);
-          hb.active = false;
+    
+    // Dash inputs
+    if (keys['shift']) movement.dash = true;
+    if (keys[' '] && !this.spacePressed) {
+      movement.airDash = true;
+      this.spacePressed = true;
+    } else if (!keys[' ']) {
+      this.spacePressed = false;
+    }
+    
+    // Combat inputs
+    if (keys['j']) actions.lightAttack = true;
+    if (keys['k']) actions.heavyAttack = true;
+    if (keys['l']) actions.parry = true;
+    if (keys['g']) actions.grab = true;
+    
+    // Send input if any action
+    if (Object.keys(movement).length > 0 || Object.keys(actions).length > 0) {
+      socket.emit('playerInput', { movement, actions });
+    }
+  }
+  
+  render(deltaTime) {
+    // Clear and render arena
+    this.renderer.clear();
+    this.renderer.renderArena();
+    
+    // Update animation frame
+    if (imagesLoaded) {
+      animationFrame++;
+    }
+    
+    // Update renderer
+    this.renderer.update(deltaTime);
+    
+    // Render all players safely
+    this.entitySystem.getAllPlayers().forEach(player => {
+      this.renderer.renderPlayer(player);
+      // Create effects for valid players
+      this.renderer.effectSystem.createAttackEffect(player.id, player);
+    });
+    
+    // Render effects
+    this.renderer.renderEffects();
+    
+    // Update UI
+    this.updateUI();
+  }
+  
+  updateUI() {
+    const myPlayer = this.entitySystem.getPlayer(myPlayerId);
+    if (myPlayer) {
+      document.getElementById('player1Health').style.width = (myPlayer.health / myPlayer.maxHealth * 100) + '%';
+      document.getElementById('player1Name').textContent = myPlayer.name;
+      document.getElementById('player1Combo').textContent = myPlayer.comboCount > 0 ? 
+        `Combo: ${myPlayer.comboCount} (${myPlayer.comboDamage} dmg)` : '';
+      
+      let stateText = myPlayer.state;
+      if (myPlayer.hitStun > 0) {
+        stateText += ` (${myPlayer.hitStun.toFixed(2)}s)`;
+      }
+      document.getElementById('player1State').textContent = stateText;
+      
+      // Update training mode specific info
+      if (isTrainingMode) {
+        this.updateTrainingInfo();
+      }
+    }
+    
+    // Update second player UI if exists
+    const otherPlayer = this.entitySystem.getAllPlayers().find(p => p.id !== myPlayerId && p.id !== 'dummy');
+    if (otherPlayer) {
+      document.getElementById('player2Health').style.width = (otherPlayer.health / otherPlayer.maxHealth * 100) + '%';
+      document.getElementById('player2Name').textContent = otherPlayer.name;
+      document.getElementById('player2Combo').textContent = otherPlayer.comboCount > 0 ? 
+        `Combo: ${otherPlayer.comboCount} (${otherPlayer.comboDamage} dmg)` : '';
+      
+      let stateText = otherPlayer.state;
+      if (otherPlayer.hitStun > 0) {
+        stateText += ` (${otherPlayer.hitStun.toFixed(2)}s)`;
+      }
+      document.getElementById('player2State').textContent = stateText;
+    }
+  }
+  
+  updateTrainingInfo() {
+    const dummy = this.entitySystem.getPlayer('dummy');
+    if (dummy) {
+      document.getElementById('dummyHP').textContent = `Dummy HP: ${dummy.health}/${dummy.maxHealth}`;
+      
+      const myPlayer = this.entitySystem.getPlayer(myPlayerId);
+      if (myPlayer) {
+        let scaling = 100;
+        if (myPlayer.comboCount > 0) {
+          scaling = Math.max(10, 100 - (myPlayer.comboCount * 10));
+        }
+        document.getElementById('comboScaling').textContent = `Scaling: ${scaling}%`;
+        
+        if (dummy.hitStun > 0) {
+          document.getElementById('hitstunTime').textContent = dummy.hitStun.toFixed(2) + 's';
+          document.getElementById('hitstunFill').style.width = (dummy.hitStun / 2 * 100) + '%';
+        } else {
+          document.getElementById('hitstunTime').textContent = '0.0s';
+          document.getElementById('hitstunFill').style.width = '0%';
         }
       }
     }
-
-    // Cleanup
-    this.hitboxes = this.hitboxes.filter(h => h.active);
-
-    this.inputs.nextFrame();
-    this.frame++;
   }
 }
 
-/* ===============================
-   EXPORT
-================================ */
-if (typeof module !== 'undefined') {
-  module.exports = {
-    Game,
-    Player,
-    Entity,
-    Hitbox,
-    Vec2,
-    InputBuffer,
-    CONFIG
-  };
-}
-/* ===============================
-   WEAPON BASE
-================================ */
-class Weapon {
-  constructor() {
-    this.owner = null;
-    this.cooldowns = {};
-  }
-
-  handleInput(_) {}
-  update() {}
-}
-
-/* ===============================
-   WEAPON STATE MACHINE
-================================ */
-class WeaponState {
-  constructor(name, duration, onStart, onUpdate, onEnd) {
-    this.name = name;
-    this.duration = duration;
-    this.onStart = onStart;
-    this.onUpdate = onUpdate;
-    this.onEnd = onEnd;
-    this.frame = 0;
-  }
-}
-
-class CombatWeapon extends Weapon {
-  constructor(game) {
-    super();
-    this.game = game;
-    this.state = null;
-    this.queue = null;
-  }
-
-  setState(state) {
-    this.state = state;
-    state.frame = 0;
-    if (state.onStart) state.onStart();
-  }
-
-  update() {
-    if (!this.state) return;
-
-    this.state.frame++;
-
-    if (this.state.onUpdate) {
-      this.state.onUpdate(this.state.frame);
-    }
-
-    if (this.state.frame >= this.state.duration) {
-      if (this.state.onEnd) this.state.onEnd();
-      this.state = null;
-
-      if (this.queue) {
-        const q = this.queue;
-        this.queue = null;
-        this.setState(q);
-      }
-    }
-  }
-}
-
-/* ===============================
-   KATANA WEAPON
-================================ */
-class Katana extends CombatWeapon {
-  handleInput(input) {
-    if (this.state) return;
-
-    if (input.light) this.light();
-    else if (input.heavy) this.heavy();
-    else if (input.charge) this.chargedHeavy();
-    else if (input.grab && !this.owner.onGround) this.aerialGrab();
-  }
-
-  light() {
-    this.setState(new WeaponState(
-      "katana_light",
-      24,
-      () => {
-        const hb = new Hitbox(
-          this.owner,
-          this.owner.pos.x + this.owner.facing * 30,
-          this.owner.pos.y + 15,
-          40, 20,
-          18,
-          this.owner.facing * 6,
-          -2,
-          12
-        );
-        hb.onHit = () => {
-          this.owner.comboCounter++;
-        };
-        this.game.hitboxes.push(hb);
-      }
-    ));
-  }
-
-  heavy() {
-    this.setState(new WeaponState(
-      "katana_heavy",
-      32,
-      () => {
-        const hb = new Hitbox(
-          this.owner,
-          this.owner.pos.x + this.owner.facing * 35,
-          this.owner.pos.y + 10,
-          45, 30,
-          22,
-          this.owner.facing * 8,
-          -3,
-          18
-        );
-        hb.onHit = () => {
-          this.owner.comboCounter += 2;
-        };
-        this.game.hitboxes.push(hb);
-      }
-    ));
-  }
-
-  chargedHeavy() {
-    this.setState(new WeaponState(
-      "katana_charged",
-      48,
-      null,
-      frame => {
-        if (frame === 40) {
-          const hb = new Hitbox(
-            this.owner,
-            this.owner.pos.x + this.owner.facing * 25,
-            this.owner.pos.y,
-            60, 40,
-            28,
-            this.owner.facing * 10,
-            -4,
-            24
-          );
-          hb.onHit = () => {
-            this.owner.comboCounter += 3;
-          };
-          this.game.hitboxes.push(hb);
-        }
-      }
-    ));
-  }
-
-  aerialGrab() {
-    this.setState(new WeaponState(
-      "katana_aerial_grab",
-      40,
-      () => {
-        const hb = new Hitbox(
-          this.owner,
-          this.owner.pos.x + this.owner.facing * 20,
-          this.owner.pos.y + 20,
-          30, 30,
-          0,
-          0,
-          0,
-          30
-        );
-
-        hb.onHit = target => {
-          target.vel.y = 14;
-          target.hp -= 40;
-          this.owner.comboCounter += 4;
-        };
-
-        this.game.hitboxes.push(hb);
-      }
-    ));
-  }
-}
-
-/* ===============================
-   GAME HELPERS
-================================ */
-Game.prototype.spawnKatanaFor = function(player) {
-  const katana = new Katana(this);
-  player.equipWeapon(katana);
-};
-
-/* ===============================
-   EXPORT UPDATE
-================================ */
-if (typeof module !== 'undefined') {
-  module.exports = {
-    Game,
-    Player,
-    Entity,
-    Hitbox,
-    Vec2,
-    InputBuffer,
-    Weapon,
-    CombatWeapon,
-    WeaponState,
-    Katana,
-    CONFIG
-  };
-}
-// ===============================
-// CHUNK 3 — BOSS, EXECUTION, HUD
-// ===============================
-
-// ---------- CAMERA ----------
-let camera = {
-  x: 0,
-  y: 0,
-  shake: 0
-};
-
-function applyCameraShake(intensity = 6) {
-  camera.shake = Math.max(camera.shake, intensity);
-}
-
-function updateCamera(target) {
-  camera.x = target.x - canvas.width / 2;
-  camera.y = target.y - canvas.height / 2;
-
-  if (camera.shake > 0) {
-    camera.x += (Math.random() - 0.5) * camera.shake;
-    camera.y += (Math.random() - 0.5) * camera.shake;
-    camera.shake *= 0.85;
-  }
-}
-
-// ---------- BOSS ----------
-function drawBoss(boss) {
-  if (!boss) return;
-
-  ctx.save();
-  ctx.translate(-camera.x, -camera.y);
-
-  // Body
-  ctx.fillStyle = boss.executionWindow ? "#ff3333" : "#aa2222";
-  ctx.fillRect(boss.x - 60, boss.y - 80, 120, 160);
-
-  // Armor bar
-  ctx.fillStyle = "#444";
-  ctx.fillRect(boss.x - 60, boss.y - 100, 120, 8);
-  ctx.fillStyle = "#00aaff";
-  ctx.fillRect(
-    boss.x - 60,
-    boss.y - 100,
-    120 * (boss.armor / 100),
-    8
-  );
-
-  // HP bar
-  ctx.fillStyle = "#333";
-  ctx.fillRect(boss.x - 60, boss.y - 115, 120, 10);
-  ctx.fillStyle = "#ff2222";
-  ctx.fillRect(
-    boss.x - 60,
-    boss.y - 115,
-    120 * (boss.hp / 500),
-    10
-  );
-
-  // Execution marker
-  if (boss.executionWindow) {
-    ctx.strokeStyle = "#ffff00";
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.arc(boss.x, boss.y, 90, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-
-  ctx.restore();
-}
-
-// ---------- EXECUTION UI ----------
-function drawExecutionPrompt(boss) {
-  if (!boss.executionWindow) return;
-
-  ctx.fillStyle = "rgba(255,255,255,0.9)";
-  ctx.font = "32px sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText(
-    "EXECUTE TOGETHER!",
-    canvas.width / 2,
-    80
-  );
-
-  ctx.font = "18px sans-serif";
-  ctx.fillText(
-    "Both players must be close",
-    canvas.width / 2,
-    110
-  );
-}
-
-// ---------- HUD ----------
-function drawHUD() {
-  hud.innerHTML = "";
-
-  const me = players[myId];
-  if (!me) return;
-
-  // Player HP
-  const hpBar = document.createElement("div");
-  hpBar.style.margin = "8px";
-  hpBar.innerHTML = `
-    <div>HP</div>
-    <div style="width:200px;height:10px;background:#333">
-      <div style="width:${me.hp * 2}px;height:10px;background:#0f0"></div>
-    </div>
-  `;
-  hud.appendChild(hpBar);
-
-  // Boss info
-  if (boss) {
-    const bossBar = document.createElement("div");
-    bossBar.style.margin = "8px";
-    bossBar.innerHTML = `
-      <div>BOSS</div>
-      <div style="width:300px;height:12px;background:#333">
-        <div style="width:${boss.hp * 0.6}px;height:12px;background:#f00"></div>
-      </div>
-    `;
-    hud.appendChild(bossBar);
-
-    if (boss.executionWindow) {
-      const exec = document.createElement("div");
-      exec.style.color = "#ff0";
-      exec.innerText = "EXECUTION WINDOW ACTIVE";
-      hud.appendChild(exec);
-    }
-  }
-}
-// -------------------------------
-// GENERALIZED CO-OP EXECUTIONS
-// -------------------------------
-
-Game.prototype.checkExecutionWindow = function() {
-  if (!this.boss || !this.boss.executionWindow) return;
-
-  const EXEC_RADIUS = 80;      // distance from boss
-  const REQUIRED_PLAYERS = Math.min(2, this.players.length); // can scale with more players
-
-  // Count players in range
-  const inRange = this.players.filter(p => p.hp > 0 && distance(p, this.boss) <= EXEC_RADIUS);
-
-  if (inRange.length >= REQUIRED_PLAYERS) {
-    // Trigger execution
-    this.boss.executionWindow = false;
-    this.boss.executed = true;
-    this.boss.state = "executing";
-    this.boss.executionTimer = 120;
-
-    // Apply execution effects to all in-range players
-    inRange.forEach(p => {
-      // Reset player state and HP
-      p.hp = 0;
-      p.invuln = 0;
-      p.vel = new Vec2(0, -6); // cinematic lift
-      console.log(`Player ${p.id} executed!`);
-      Cinematic.focus(p);
-    });
-
-    // Co-op prompt for surviving players
-    const survivors = this.players.filter(p => p.hp > 0);
-    if (survivors.length > 0) {
-      Cinematic.coOpPrompt(survivors);
-    }
-
-    // Camera shake
-    applyCameraShake(16);
-  }
-};
-
-// ---------- STATE HANDLING ----------
-function handleBossState(boss) {
-  if (!boss) return;
-
-  if (boss.executed) {
-    applyCameraShake(12);
-  }
-
-  if (boss.state === "executing") {
-    applyCameraShake(8);
-  }
-}
-
-// ---------- MAIN DRAW EXTENSION ----------
-const originalDraw = draw;
-
-draw = function () {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  const me = players[myId];
-  if (me) updateCamera(me);
-
-  // World
-  ctx.save();
-  ctx.translate(-camera.x, -camera.y);
-
-  // Ground
-  ctx.fillStyle = "#333";
-  ctx.fillRect(-2000, 420, 4000, 200);
-
-  // Players
-  for (const id in players) {
-    drawPlayer(players[id]);
-  }
-
-  ctx.restore();
-
-  // Boss
-  drawBoss(boss);
-
-  // UI
-  if (boss) drawExecutionPrompt(boss);
-  drawHUD();
-};
-// ================================
-// CHUNK 4 — COMBAT, HITBOXES, STAGGER, DAMAGE SYNC
-// ================================
-
-// -------------------------------
-// HITBOX CLASS
-// -------------------------------
-class Hitbox {
-  constructor(owner, x, y, w, h, damage = 10, kbX = 0, kbY = -2, stun = 10) {
-    this.owner = owner;
-    this.x = x;
-    this.y = y;
-    this.w = w;
-    this.h = h;
-    this.damage = damage;
-    this.kbX = kbX;
-    this.kbY = kbY;
-    this.stun = stun;
-    this.active = true;
-    this.onHit = null;
-  }
-
-  intersects(entity) {
-    return !(
-      entity.pos.x + entity.w < this.x ||
-      entity.pos.x > this.x + this.w ||
-      entity.pos.y + entity.h < this.y ||
-      entity.pos.y > this.y + this.h
-    );
-  }
-}
-
-// -------------------------------
-// DAMAGE APPLICATION
-// -------------------------------
-Game.prototype.applyHit = function(hitbox, target) {
-  if (!hitbox.active) return;
-  if (target.invuln > 0) return;
-
-  // Apply damage
-  target.hp -= hitbox.damage;
-  target.vel.x = hitbox.kbX;
-  target.vel.y = hitbox.kbY;
-  target.hitstun = hitbox.stun;
-  target.invuln = CONFIG.INVULN_FRAMES;
-
-  // Stagger buildup for boss
-  if (target instanceof Boss) {
-    target.stagger = (target.stagger || 0) + hitbox.damage;
-    if (target.stagger >= (target.staggerThreshold || 100)) {
-      target.stagger = 0;
-      target.state = "staggered";
-      applyCameraShake(12);
-      console.log("Boss staggered!");
-    }
-  }
-
-  // Combo increment for player
-  if (hitbox.owner instanceof Player) {
-    hitbox.owner.comboCounter = (hitbox.owner.comboCounter || 0) + 1;
-  }
-
-  // Trigger onHit callback
-  if (hitbox.onHit) hitbox.onHit(target);
-
-  // Mark hitbox as consumed
-  hitbox.active = false;
-
-  // Spawn floating damage
-  this.spawnDamage(target.pos.x + target.w / 2, target.pos.y, hitbox.damage);
-
-  // Sync damage over network
-  if (typeof socket !== "undefined") {
-    socket.emit("playerHit", {
-      targetId: target.id,
-      damage: hitbox.damage,
-      kbX: hitbox.kbX,
-      kbY: hitbox.kbY
-    });
-  }
-};
-
-// -------------------------------
-// HIT DETECTION LOOP
-// -------------------------------
-Game.prototype.updateHitboxes = function() {
-  for (const hb of this.hitboxes) {
-    if (!hb.active) continue;
-
-    // Player vs Player
-    for (const p of this.players) {
-      if (p !== hb.owner) this.applyHit(hb, p);
-    }
-
-    // Player vs Boss
-    if (this.boss && hb.owner instanceof Player) this.applyHit(hb, this.boss);
-
-    // Boss vs Players
-    if (hb.owner instanceof Boss) {
-      for (const p of this.players) this.applyHit(hb, p);
-    }
-  }
-
-  // Remove inactive hitboxes
-  this.hitboxes = this.hitboxes.filter(h => h.active);
-};
-
-// -------------------------------
-// COMBO & HITSTUN MANAGEMENT
-// -------------------------------
-Game.prototype.updatePlayerCombat = function() {
-  for (const p of this.players) {
-    if (p.hitstun > 0) {
-      p.hitstun--;
-      // prevent input during hitstun
-      continue;
-    }
-    // reset combo if idle
-    if (p.state === "idle" && p.comboCounter > 0) p.comboCounter = 0;
-  }
-};
-
-// -------------------------------
-// STAGGER & DAMAGE SYNC
-// -------------------------------
-Game.prototype.updateBossCombat = function() {
-  if (!this.boss) return;
-
-  // Reduce stagger gradually
-  if (this.boss.stagger > 0 && this.boss.state !== "staggered") {
-    this.boss.stagger -= 0.2;
-  }
-
-  // Exit stagger after timer
-  if (this.boss.state === "staggered") {
-    if (!this.boss.staggerTimer) this.boss.staggerTimer = 40;
-    this.boss.staggerTimer--;
-    if (this.boss.staggerTimer <= 0) {
-      this.boss.state = "idle";
-      this.boss.staggerTimer = null;
-    }
-  }
-};
-
-// -------------------------------
-// SPAWN HITBOX UTILITY
-// -------------------------------
-Game.prototype.spawnHitbox = function(owner, x, y, w, h, damage = 10, kbX = 0, kbY = -2, stun = 10, onHit = null) {
-  const hb = new Hitbox(owner, x, y, w, h, damage, kbX, kbY, stun);
-  hb.onHit = onHit;
-  this.hitboxes.push(hb);
-  return hb;
-};
-
-// -------------------------------
-// MAIN UPDATE EXTENSIONS
-// -------------------------------
-const updateOriginal = Game.prototype.update;
-Game.prototype.update = function() {
-  // Base update (movement, inputs, physics)
-  updateOriginal.call(this);
-
-  // Combat
-  this.updateHitboxes();
-  this.updatePlayerCombat();
-  this.updateBossCombat();
-  this.checkExecutionWindow();
-  this.checkCoOpFinisher();
-};
-// ================================
-// CHUNK 5 — ANIMATIONS, WEAPON ARCS, PARTICLES
-// ================================
-
-// -------------------------------
-// SPRITE / ARC PLACEHOLDER
-// -------------------------------
-class WeaponArc {
-  constructor(owner, x, y, radius, angleStart, angleEnd, duration) {
-    this.owner = owner;
-    this.x = x;
-    this.y = y;
-    this.radius = radius;
-    this.angleStart = angleStart;
-    this.angleEnd = angleEnd;
-    this.duration = duration;
-    this.frame = 0;
-    this.active = true;
-  }
-
-  update() {
-    this.frame++;
-    if (this.frame >= this.duration) this.active = false;
-  }
-
-  draw(ctx) {
-    if (!this.active) return;
-    ctx.save();
-    ctx.translate(this.x, this.y);
-    ctx.strokeStyle = "white";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(0, 0, this.radius, this.angleStart, this.angleEnd);
-    ctx.stroke();
-    ctx.restore();
-  }
-}
-
-// -------------------------------
-// GAME ARC & PARTICLE MANAGEMENT
-// -------------------------------
-Game.prototype.weaponArcs = [];
-Game.prototype.particles = [];
-
-Game.prototype.spawnArc = function(owner, radius = 50, start = 0, end = Math.PI / 2, duration = 12) {
-  const arc = new WeaponArc(owner, owner.pos.x + owner.w/2, owner.pos.y + owner.h/2, radius, start, end, duration);
-  this.weaponArcs.push(arc);
-  return arc;
-};
-
-Game.prototype.spawnParticle = function(x, y, color = "orange") {
-  const p = {
-    pos: new Vec2(x, y),
-    vel: new Vec2((Math.random() - 0.5) * 3, -Math.random() * 3),
-    life: 30,
-    color: color
-  };
-  this.particles.push(p);
-  return p;
-};
-
-// -------------------------------
-// PARTICLE UPDATE & DRAW
-// -------------------------------
-Game.prototype.updateParticles = function(ctx) {
-  this.particles.forEach(p => {
-    p.pos.add(p.vel);
-    p.vel.y += 0.15; // gravity
-    ctx.fillStyle = p.color;
-    ctx.fillRect(p.pos.x, p.pos.y, 4, 4);
-    p.life--;
+function selectWeapon(weapon) {
+  selectedWeapon = weapon;
+  
+  // Update UI selection
+  document.querySelectorAll('.weapon-btn').forEach(btn => {
+    btn.classList.remove('selected');
   });
-  this.particles = this.particles.filter(p => p.life > 0);
-};
+  
+  const selectedBtn = document.querySelector(`.weapon-btn[onclick*="${weapon}"]`);
+  if (selectedBtn) {
+    selectedBtn.classList.add('selected');
+  }
+}
 
-// -------------------------------
-// WEAPON ARC UPDATE & DRAW
-// -------------------------------
-Game.prototype.updateArcs = function(ctx) {
-  this.weaponArcs.forEach(a => {
-    a.update();
-    a.draw(ctx);
+function startGame() {
+  playerName = document.getElementById('playerName').value || 'Player';
+  isTrainingMode = false;
+  
+  initializeGame('default');
+}
+
+function startTrainingMode() {
+  playerName = document.getElementById('playerName').value || 'Player';
+  isTrainingMode = true;
+  
+  initializeGame('training');
+}
+
+function initializeGame(roomId) {
+  document.getElementById('menu').style.display = 'none';
+  document.getElementById('gameContainer').style.display = 'block';
+  
+  if (!socket) {
+    socket = io();
+    setupSocketListeners();
+  }
+  
+  if (!window.game) {
+    window.game = new Game();
+  }
+  
+  socket.emit('joinRoom', {
+    roomId: roomId,
+    name: playerName,
+    weapon: selectedWeapon
   });
-  this.weaponArcs = this.weaponArcs.filter(a => a.active);
-};
-
-// -------------------------------
-// INTEGRATE VISUALS INTO WEAPON ATTACKS
-// -------------------------------
-CombatWeapon.prototype.spawnVisualHit = function(hitbox) {
-  const x = hitbox.x + hitbox.w / 2;
-  const y = hitbox.y + hitbox.h / 2;
-
-  // Spawn arc
-  const radius = Math.max(hitbox.w, hitbox.h);
-  const startAngle = 0;
-  const endAngle = Math.PI * (Math.random() * 0.5 + 0.25);
-  game.spawnArc(this.owner, radius, startAngle, endAngle, 10);
-
-  // Spawn particle explosion
-  for (let i = 0; i < 5; i++) {
-    game.spawnParticle(x, y, "yellow");
+  
+  if (isTrainingMode) {
+    setTimeout(() => {
+      socket.emit('enableTrainingMode');
+    }, 1000);
   }
-
-  // Spawn floating damage
-  game.spawnDamage(x, y, hitbox.damage);
-};
-
-// -------------------------------
-// HOOK COMBAT HIT FOR VISUALS
-// -------------------------------
-const originalApplyHit = Game.prototype.applyHit;
-Game.prototype.applyHit = function(hitbox, target) {
-  originalApplyHit.call(this, hitbox, target);
-
-  // spawn visuals if hit registered
-  if (!hitbox.active) this.spawnVisualHit(hitbox);
-};
-
-// -------------------------------
-// PLAYER ANIMATION STATE
-// -------------------------------
-Player.prototype.draw = function(ctx) {
-  ctx.save();
-  ctx.fillStyle = "blue";
-  if (this.hitstun > 0) ctx.fillStyle = "red";
-  ctx.translate(this.pos.x + this.w/2, this.pos.y + this.h/2);
-  ctx.scale(this.facing, 1);
-  ctx.fillRect(-this.w/2, -this.h/2, this.w, this.h);
-  ctx.restore();
-};
-
-// -------------------------------
-// BOSS ANIMATION STATE
-// -------------------------------
-Boss.prototype.draw = function(ctx) {
-  ctx.save();
-  ctx.fillStyle = "purple";
-  if (this.state === "staggered") ctx.fillStyle = "orange";
-  ctx.fillRect(this.pos.x, this.pos.y, this.w, this.h);
-  ctx.restore();
-};
-
-// -------------------------------
-// HUD & DAMAGE DRAW HOOKS
-// -------------------------------
-Game.prototype.draw = function(ctx) {
-  ctx.clearRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
-
-  // Draw players
-  this.players.forEach(p => p.draw(ctx));
-
-  // Draw boss
-  if (this.boss) this.boss.draw(ctx);
-
-  // Draw weapon arcs
-  this.updateArcs(ctx);
-
-  // Draw particles
-  this.updateParticles(ctx);
-
-  // Draw floating damage
-  this.updateDamageNumbers(ctx);
-
-  // Draw HUD
-  HUD.draw(ctx, this.players);
-};
-
-// -------------------------------
-// MAIN GAME LOOP (CLIENT-SIDE)
-// -------------------------------
-function startGameLoop(canvas, game) {
-  const ctx = canvas.getContext("2d");
-  function loop() {
-    game.update();
-    game.draw(ctx);
-    requestAnimationFrame(loop);
-  }
-  requestAnimationFrame(loop);
 }
 
-// -------------------------------
-// EXPORT VISUALS / ANIMATION MODULE
-// -------------------------------
-if (typeof module !== 'undefined') {
-  module.exports = { WeaponArc };
-}
-// ================================
-// CHUNK 6 — NETWORK SYNC & ROLLBACK
-// ================================
-
-// -------------------------------
-// PLAYER INPUT COLLECTION
-// -------------------------------
-class NetworkInput {
-  constructor() {
-    this.pendingInputs = {}; // frame -> {playerId: input}
-    this.lastFrame = 0;
-  }
-
-  record(frame, playerId, keys) {
-    if (!this.pendingInputs[frame]) this.pendingInputs[frame] = {};
-    this.pendingInputs[frame][playerId] = JSON.parse(JSON.stringify(keys));
-    if (frame > this.lastFrame) this.lastFrame = frame;
-  }
-
-  get(frame, playerId) {
-    return this.pendingInputs[frame]?.[playerId] || {};
-  }
-
-  cleanup(upToFrame) {
-    for (let f in this.pendingInputs) {
-      if (f <= upToFrame) delete this.pendingInputs[f];
+function setupSocketListeners() {
+  socket.on('roomUpdate', (data) => {
+    // Defensive: validate data structure
+    if (!data || !Array.isArray(data.players)) {
+      console.warn('Invalid roomUpdate data:', data);
+      return;
     }
+    
+    // Use entity system for safe player management
+    window.game.entitySystem.updatePlayers(data.players);
+    
+    if (data.trainingMode !== isTrainingMode) {
+      isTrainingMode = data.trainingMode;
+      updateTrainingUI();
+    }
+  });
+  
+  socket.on('joinedRoom', (data) => {
+    if (data && data.playerId) {
+      myPlayerId = data.playerId;
+    }
+  });
+  
+  socket.on('disconnect', () => {
+    console.log('Disconnected from server');
+    // Cleanup all local state
+    if (window.game && window.game.entitySystem) {
+      window.game.entitySystem.cleanup();
+    }
+  });
+}
+
+function updateTrainingUI() {
+  const trainingControls = document.getElementById('trainingControls');
+  const trainingInfo = document.getElementById('trainingInfo');
+  
+  if (isTrainingMode) {
+    trainingControls.style.display = 'block';
+    trainingInfo.style.display = 'block';
+  } else {
+    trainingControls.style.display = 'none';
+    trainingInfo.style.display = 'none';
   }
 }
 
-// -------------------------------
-// SERVER-AUTHORITATIVE LOOP
-// -------------------------------
-class PvPServer {
-  constructor(io, game) {
-    this.io = io;
-    this.game = game;
-    this.frame = 0;
-    this.players = {}; // socketId -> player data
-    this.TICK_RATE = 60;
-
-    this.io.on("connection", socket => this.handleConnect(socket));
-
-    setInterval(() => this.tick(), 1000 / this.TICK_RATE);
-  }
-
-  handleConnect(socket) {
-    console.log(`Player connected: ${socket.id}`);
-    this.players[socket.id] = { id: socket.id, inputBuffer: new NetworkInput() };
-
-    // assign player to game if slot free
-    const freePlayer = this.game.players.find(p => !p.id);
-    if (freePlayer) freePlayer.id = socket.id;
-
-    socket.on("playerInput", data => {
-      this.players[socket.id].inputBuffer.record(data.frame, socket.id, data.keys);
-    });
-
-    socket.on("disconnect", () => {
-      console.log(`Player disconnected: ${socket.id}`);
-      delete this.players[socket.id];
-      // remove player from game
-      const p = this.game.players.find(p=>p.id===socket.id);
-      if(p) p.id = null;
-    });
-  }
-
-  tick() {
-    // Apply inputs for this frame
-    for (let p of this.game.players) {
-      if (!p.id) continue;
-      const input = this.players[p.id].inputBuffer.get(this.frame, p.id) || {};
-      this.game.inputs.record(p.id, input);
-    }
-
-    // Update game
-    this.game.update();
-
-    // Broadcast authoritative state
-    this.io.emit("stateUpdate", {
-      frame: this.frame,
-      players: this.game.players.map(p => ({
-        id: p.id,
-        x: p.pos.x,
-        y: p.pos.y,
-        hp: p.hp,
-        facing: p.facing,
-        weapon: p.weapon ? p.weapon.constructor.name : null
-      })),
-      boss: this.game.boss ? {
-        x: this.game.boss.pos.x,
-        y: this.game.boss.pos.y,
-        hp: this.game.boss.hp,
-        state: this.game.boss.state,
-        executionWindow: this.game.boss.executionWindow
-      } : null,
-      hitboxes: this.game.hitboxes.map(hb => ({
-        x: hb.x, y: hb.y, w: hb.w, h: hb.h, active: hb.active
-      }))
-    });
-
-    // Clean old inputs
-    for (let id in this.players) {
-      this.players[id].inputBuffer.cleanup(this.frame - 60); // keep 1 sec of history
-    }
-
-    this.frame++;
+// Training mode functions
+function resetDummy() {
+  if (socket && isTrainingMode) {
+    socket.emit('resetDummy');
   }
 }
 
-// -------------------------------
-// CLIENT-RENDER LOOP & INPUT SEND
-// -------------------------------
-class PvPClient {
-  constructor(socket, playerId, game) {
-    this.socket = socket;
-    this.playerId = playerId;
-    this.game = game;
-    this.frame = 0;
-    this.keyState = {};
-    this.setupInputListeners();
-  }
-
-  setupInputListeners() {
-    window.addEventListener("keydown", e => this.keyState[e.code] = true);
-    window.addEventListener("keyup", e => this.keyState[e.code] = false);
-  }
-
-  sendInput() {
-    this.socket.emit("playerInput", {
-      frame: this.frame,
-      keys: this.keyState
-    });
-  }
-
-  update() {
-    // Send input to server each frame
-    this.sendInput();
-    this.frame++;
-  }
-
-  handleStateUpdate(state) {
-    // Authoritative positions from server
-    for (const pData of state.players) {
-      const p = this.game.players.find(pl => pl.id === pData.id);
-      if (!p) continue;
-      p.pos.x = pData.x;
-      p.pos.y = pData.y;
-      p.hp = pData.hp;
-      p.facing = pData.facing;
-      if (p.weapon && p.weapon.constructor.name !== pData.weapon) {
-        // optional: swap weapon
-        switch(pData.weapon){
-          case "Katana": p.equipWeapon(new Katana()); break;
-          case "LongSword": p.equipWeapon(new LongSword()); break;
-          case "Scythe": p.equipWeapon(new Scythe()); break;
-          case "FistTanto": p.equipWeapon(new FistTanto()); break;
-        }
-      }
-    }
-
-    // Boss update
-    if (state.boss && this.game.boss) {
-      this.game.boss.pos.x = state.boss.x;
-      this.game.boss.pos.y = state.boss.y;
-      this.game.boss.hp = state.boss.hp;
-      this.game.boss.state = state.boss.state;
-      this.game.boss.executionWindow = state.boss.executionWindow;
-    }
+function toggleDummyHP() {
+  if (socket && isTrainingMode) {
+    socket.emit('toggleDummyHP');
   }
 }
 
-// -------------------------------
-// HELPER FUNCTIONS
-// -------------------------------
-function distance(a,b){ return Math.hypot(a.pos.x-b.pos.x, a.pos.y-b.pos.y); }
-function applyCameraShake(intensity){ console.log("Camera shake", intensity); }
-
-// -------------------------------
-// EXPORT NETWORK MODULE
-// -------------------------------
-if (typeof module !== 'undefined') {
-  module.exports = { PvPServer, PvPClient };
+function exitTraining() {
+  location.reload();
 }
+
+// Initialize event listeners
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('playerName').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+      startGame();
+    }
+  });
+  
+  // Select first weapon by default
+  selectWeapon('longsword');
+});
