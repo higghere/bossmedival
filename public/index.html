@@ -1,1 +1,299 @@
 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arena Fighter</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #000;
+            color: #fff;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+        
+        #gameContainer {
+            position: relative;
+            border: 2px solid #444;
+        }
+        
+        canvas {
+            display: block;
+            background: linear-gradient(180deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        }
+        
+        #ui {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 10;
+        }
+        
+        .player-info {
+            position: absolute;
+            font-size: 14px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        }
+        
+        .health-container {
+            background: rgba(0,0,0,0.7);
+            padding: 5px;
+            border-radius: 5px;
+            border: 1px solid #444;
+        }
+        
+        .health-bar {
+            width: 200px;
+            height: 18px;
+            background: rgba(255, 255, 255, 0.3);
+            border: 2px solid #fff;
+            border-radius: 9px;
+            overflow: hidden;
+            margin: 3px 0;
+        }
+        
+        .health-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #ff4444, #ff6666);
+            transition: width 0.1s ease;
+        }
+        
+        .combo-info {
+            font-size: 12px;
+            color: #ffcc00;
+            margin-top: 5px;
+        }
+        
+        .state-info {
+            font-size: 11px;
+            color: #88ccff;
+            margin-top: 3px;
+        }
+        
+        #menu {
+            text-align: center;
+            padding: 40px;
+            background: rgba(0,0,0,0.9);
+            border-radius: 20px;
+            border: 2px solid #444;
+            max-width: 600px;
+        }
+        
+        h1 {
+            color: #ffcc00;
+            margin-bottom: 30px;
+        }
+        
+        h3 {
+            color: #88ccff;
+            margin: 20px 0 10px 0;
+        }
+        
+        button {
+            background: #444;
+            color: #fff;
+            border: none;
+            padding: 12px 24px;
+            margin: 8px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        button:hover {
+            background: #666;
+            transform: translateY(-2px);
+        }
+        
+        button.selected {
+            background: #4CAF50;
+            box-shadow: 0 0 10px rgba(76, 175, 80, 0.5);
+        }
+        
+        input {
+            padding: 12px;
+            font-size: 16px;
+            border-radius: 5px;
+            border: 1px solid #444;
+            background: #222;
+            color: #fff;
+            margin: 10px;
+            width: 200px;
+        }
+        
+        .weapon-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            max-width: 400px;
+            margin: 0 auto;
+        }
+        
+        .weapon-btn {
+            padding: 15px;
+            background: #333;
+            border: 2px solid #555;
+            position: relative;
+        }
+        
+        .weapon-btn.selected {
+            background: #4CAF50;
+            border-color: #6FD679;
+        }
+        
+        .weapon-name {
+            font-weight: bold;
+            font-size: 14px;
+        }
+        
+        .weapon-type {
+            font-size: 11px;
+            color: #aaa;
+            margin-top: 5px;
+        }
+        
+        #trainingControls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.8);
+            padding: 10px;
+            border-radius: 5px;
+            border: 1px solid #444;
+            pointer-events: all;
+            display: none;
+        }
+        
+        #trainingControls button {
+            padding: 8px 12px;
+            font-size: 12px;
+            margin: 3px;
+        }
+        
+        .training-info {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.8);
+            padding: 10px;
+            border-radius: 5px;
+            border: 1px solid #444;
+            font-size: 12px;
+            display: none;
+        }
+        
+        .hitstun-bar {
+            width: 100px;
+            height: 6px;
+            background: rgba(255,255,255,0.3);
+            border-radius: 3px;
+            overflow: hidden;
+            margin: 2px 0;
+        }
+        
+        .hitstun-fill {
+            height: 100%;
+            background: #ff9900;
+            transition: width 0.1s ease;
+        }
+    </style>
+</head>
+<body>
+    <div id="menu">
+        <h1>⚔️ Arena Fighter ⚔️</h1>
+        
+        <input type="text" id="playerName" placeholder="Enter your name" maxlength="20">
+        
+        <h3>Select Weapon:</h3>
+        <div class="weapon-grid">
+            <button class="weapon-btn" onclick="selectWeapon('longsword')">
+                <div class="weapon-name">Long Sword</div>
+                <div class="weapon-type">Burst + Wall Control</div>
+            </button>
+            <button class="weapon-btn" onclick="selectWeapon('scythe')">
+                <div class="weapon-name">Scythe</div>
+                <div class="weapon-type">Agility + Air Dominance</div>
+            </button>
+            <button class="weapon-btn" onclick="selectWeapon('katana')">
+                <div class="weapon-name">Katana</div>
+                <div class="weapon-type">Balanced Duelist</div>
+            </button>
+            <button class="weapon-btn" onclick="selectWeapon('fist')">
+                <div class="weapon-name">Fist + Tanto</div>
+                <div class="weapon-type">Close Quarters</div>
+            </button>
+        </div>
+        
+        <div style="margin-top: 30px;">
+            <button onclick="startGame()">🎮 Start Battle</button>
+            <button onclick="startTrainingMode()">🥋 Training Mode</button>
+        </div>
+        
+        <div style="margin-top: 20px; font-size: 12px; color: #888;">
+            <div><strong>Movement:</strong> A/D or ← →, W or ↑ Jump, S or ↓ Fast Fall</div>
+            <div><strong>Combat:</strong> J Light Attack, K Heavy Attack, L Parry, G Grab</div>
+            <div><strong>Mobility:</strong> Shift Ground Dash, Space Air Dash, Wall Jump near walls</div>
+        </div>
+    </div>
+    
+    <div id="gameContainer" style="display: none;">
+        <canvas id="gameCanvas" width="1200" height="600"></canvas>
+        <div id="ui">
+            <div class="player-info" id="player1Info" style="top: 20px; left: 20px;">
+                <div class="health-container">
+                    <div id="player1Name"></div>
+                    <div class="health-bar">
+                        <div class="health-fill" id="player1Health"></div>
+                    </div>
+                    <div class="combo-info" id="player1Combo"></div>
+                    <div class="state-info" id="player1State"></div>
+                </div>
+            </div>
+            
+            <div class="player-info" id="player2Info" style="top: 20px; right: 20px;">
+                <div class="health-container">
+                    <div id="player2Name"></div>
+                    <div class="health-bar">
+                        <div class="health-fill" id="player2Health"></div>
+                    </div>
+                    <div class="combo-info" id="player2Combo"></div>
+                    <div class="state-info" id="player2State"></div>
+                </div>
+            </div>
+            
+            <div id="trainingControls">
+                <div style="font-size: 12px; margin-bottom: 5px;">Training Controls</div>
+                <button onclick="resetDummy()">Reset Position</button>
+                <button onclick="toggleDummyHP()">Toggle HP</button>
+                <button onclick="exitTraining()">Exit Training</button>
+            </div>
+            
+            <div class="training-info" id="trainingInfo">
+                <div><strong>Training Mode</strong></div>
+                <div id="dummyHP">Dummy HP: 1000</div>
+                <div id="comboScaling">Scaling: 100%</div>
+                <div id="hitstunInfo">
+                    <div>Hitstun: <span id="hitstunTime">0.0s</span></div>
+                    <div class="hitstun-bar">
+                        <div class="hitstun-fill" id="hitstunFill"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="game.js"></script>
+</body>
+</html>
